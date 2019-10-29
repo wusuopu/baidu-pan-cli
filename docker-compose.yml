@@ -1,0 +1,9 @@
+version: "2"
+
+services:
+  app:
+    build: .
+    expose:
+      - "80"
+    ports:
+      - "80"
