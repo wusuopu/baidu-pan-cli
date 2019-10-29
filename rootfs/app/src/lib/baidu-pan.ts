@@ -6,7 +6,6 @@ import logger from './logger'
 
 const PAN_URL = 'http://pan.baidu.com'
 const PAN_API_URL = `https://pan.baidu.com/api`
-const UPLOAD_API_URL = 'https://nj02ct01.pcs.baidu.com/rest/2.0/pcs/superfile2'
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.120 Safari/537.36'
 
 
@@ -29,6 +28,13 @@ export interface FileItem {
   empty?: number,
   // isdir 为 0 时，以下属性才存在
   md5?: string,
+}
+export interface AuthToken {
+  bduss: string,
+  stoken: string,
+  bdstoken?: string,
+  pcsett?: string,
+  pcs_server?: string,
 }
 
 const fetch = async (options: any) => {
@@ -91,17 +97,23 @@ export default class BaiduPan {
   stoken: string
   bdstoken: string
   pcsett: string
+
+  pcsApiUrl: string
   /**
    * @param {string} bduss: 从 .baidu.com 的 cookie 中获取 BDUSS;
    * @param {string} stoken: 从 .pan.baidu.com 的 cookie 中获取 STOKEN;
    * @param {string} bdstoken
    * @param {string} pcsett: 从 .pcs.baidu.com 的 cookie 中获取 pcsett;
    */
-  constructor (bduss: string, stoken: string, bdstoken?: string, pcsett?: string) {
+  constructor (bduss: string, stoken: string, bdstoken?: string, pcsett?: string, pcsApiHost?: string) {
     this.bduss = bduss
     this.stoken = stoken
     this.bdstoken = bdstoken
     this.pcsett = pcsett
+
+    pcsApiHost = pcsApiHost || 'nj02ct01.pcs.baidu.com'
+    // 默认为： https://nj02ct01.pcs.baidu.com/rest/2.0/pcs/superfile2
+    this.pcsApiUrl = `https://${pcsApiHost}/rest/2.0/pcs/superfile2`
   }
 
   async checkCookie (): Promise<boolean> {
@@ -208,7 +220,7 @@ export default class BaiduPan {
    * @param {string} targetPath
    *
    */
-  async uploadFile (filename: string, targetPath: string) {
+  async uploadFile (filename: string, targetPath: string): Promise<FileItem> {
     let stat = await fs.stat(filename)
     let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
     // 预创建文件
@@ -240,7 +252,7 @@ export default class BaiduPan {
     logger.debug(`precreate file ${filename}; ${uploadid}`)
 
     // 上传文件
-    apiUri = UPLOAD_API_URL
+    apiUri = this.pcsApiUrl
     res = await fetch({
       url: apiUri,
       method: 'POST',
@@ -283,7 +295,7 @@ export default class BaiduPan {
         local_mtime: (stat.ctimeMs / 1000).toFixed(0)
       }
     })
-    let createRes = JSON.parse(res)
+    let createRes: FileItem = JSON.parse(res)
     if (!createRes.fs_id) {
       logger.error(`create fail ${res}`)
       throw new UploadError(filename, 'create')
@@ -319,5 +331,20 @@ export default class BaiduPan {
     logger.debug(`delete task ${res}`)
 
     return deleteRes
+  }
+  /**
+   * 获取最近的文件上传的服务器列表
+   */
+  async getUploadHost (): Promise<{client_ip: string, server: string[], host: string}> {
+    let apiUri = `https://pcs.baidu.com/rest/2.0/pcs/file`
+    let res = await fetch({
+      url: apiUri,
+      method: 'GET',
+      qs: buildQuery({
+        method: 'locateupload',
+        bdstoken: this.bdstoken
+      })
+    })
+    return JSON.parse(res)
   }
 }

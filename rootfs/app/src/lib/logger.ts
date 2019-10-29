@@ -1,6 +1,6 @@
 import winston from 'winston'
 
-const { NODE_ENV = 'development' } = process.env
+const { NODE_ENV } = process.env
 
 const logger = winston.createLogger({
   level: NODE_ENV === 'development' ? 'debug' : 'info',

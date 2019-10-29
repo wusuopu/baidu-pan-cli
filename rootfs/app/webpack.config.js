@@ -13,14 +13,17 @@ if (NODE_ENV === 'development') {
 }
 
 module.exports = {
-  entry: path.resolve(rootPath, './src/index.ts'),
+  entry: {
+    index: path.resolve(rootPath, './src/index.ts'),
+    cli: path.resolve(rootPath, './src/cli.ts')
+  },
   mode: NODE_ENV,
   target: 'node',
   watch: NODE_ENV === 'development',
   externals: [ nodeExternals() ],
   output: {
     path: path.resolve(rootPath, 'build', NODE_ENV === 'development' ? 'dev' : 'prod'),
-    filename: 'index.js'
+    filename: '[name].js'
   },
   resolve: {
     extensions: ['.ts', '.js'],
