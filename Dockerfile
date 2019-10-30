@@ -6,6 +6,8 @@ RUN cd /app && yarn install && rm -rf /root/.cache /root/.npm /usr/local/share/.
 COPY ./rootfs/ /
 WORKDIR /app
 
+RUN yarn build
+
 VOLUME ["/data"]
 
 ENV STORE_TYPE="leveldb" \
