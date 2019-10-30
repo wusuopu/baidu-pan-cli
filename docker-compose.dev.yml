@@ -9,6 +9,8 @@ services:
       - "80"
     volumes:
       - ./rootfs/app:/app
+    environment:
+      - NODE_ENV=development
     working_dir: /app
     command: cat
     tty: true

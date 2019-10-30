@@ -10,8 +10,10 @@ for (let p of module.paths) {
 }
 
 const LEVELDB_PATH = process.env.LEVELDB_PATH || path.join(APP_ROOT_PATH, 'tmp/data')
+const EXPRESS_TEMP_FILE_FOLDER = process.env.EXPRESS_TEMP_FILE_FOLDER || path.join(APP_ROOT_PATH, 'tmp/files')
 
 export default {
   APP_ROOT_PATH,
-  LEVELDB_PATH
+  LEVELDB_PATH,
+  EXPRESS_TEMP_FILE_FOLDER
 }

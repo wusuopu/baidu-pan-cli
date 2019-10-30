@@ -2,6 +2,7 @@ import redis from 'redis'
 import bluebird from 'bluebird'
 import levelup from 'levelup'
 import leveldown from 'leveldown'
+import levelttl from 'level-ttl'
 import path from 'path'
 import _ from 'lodash'
 import fs from 'fs-extra'
@@ -28,11 +29,15 @@ class RedisStore implements Store {
   async get (key: string): Promise<any> {
     return await this.client.get(`${this.key_prefix}${key}`)
   }
-  async set (key: string, value: any): Promise<boolean> {
+  async set (key: string, value: any, ttl?: number): Promise<boolean> {
     if (!_.isString(value)) {
       value = JSON.stringify(value)
     }
-    await this.client.set(`${this.key_prefix}${key}`, value)
+    if (ttl) {
+      await this.client.set(`${this.key_prefix}${key}`, value, 'EX', ttl)
+    } else {
+      await this.client.set(`${this.key_prefix}${key}`, value)
+    }
     return true
   }
   async del (key: string): Promise<boolean> {
@@ -43,16 +48,20 @@ class RedisStore implements Store {
 class LevelDBStore implements Store {
   client: any;
   constructor (db_path: string) {
-    this.client = levelup(leveldown(db_path))
+    this.client = levelttl(levelup(leveldown(db_path)))
   }
   async get (key: string): Promise<string> {
     return await this.client.get(key)
   }
-  async set (key: string, value: any): Promise<boolean> {
+  async set (key: string, value: any, ttl?: number): Promise<boolean> {
     if (!_.isString(value)) {
       value = JSON.stringify(value)
     }
-    await this.client.put(key, value)
+    let options: {ttl?: number} = {}
+    if (ttl) {
+      options.ttl = ttl * 1000
+    }
+    await this.client.put(key, value, options)
     return true
   }
   async del (key: string): Promise<boolean> {

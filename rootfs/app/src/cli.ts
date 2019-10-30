@@ -3,16 +3,7 @@ import fs from 'fs-extra'
 import _ from 'lodash'
 import BaiduPan, { AuthToken } from './lib/baidu-pan'
 import Store from './store'
-
-const getAuthToken = async (): Promise<AuthToken> => {
-  try {
-    let data = await Store.get('auth:token')
-    data = JSON.parse(data)
-    return data
-  } catch (e) {
-    return
-  }
-}
+import * as utils from './utils'
 
 program
   .command('add_config <BDUSS> <STOKEN> [bdstoken [pcsett]]')
@@ -41,7 +32,7 @@ program
   .command('list_config')
   .description('获取用户信息')
   .action(async () => {
-    let data = (await getAuthToken()) || {}
+    let data = (await utils.getAuthToken()) || {}
     console.log(JSON.stringify(data, undefined, ' '))
   })
 
@@ -53,7 +44,7 @@ program
       console.log(`文件 ${filename} 不存在`)
       return
     }
-    let data = await getAuthToken()
+    let data = await utils.getAuthToken()
     if (!_.get(data, 'bdstoken')) {
       console.log(`用户信息不存在`)
       return
@@ -72,7 +63,7 @@ program
   .description('删除文件')
   .action(async (file, files) => {
     let filelist = [file].concat(files)
-    let data = await getAuthToken()
+    let data = await utils.getAuthToken()
     if (!_.get(data, 'bdstoken')) {
       console.log(`用户信息不存在`)
       return
@@ -90,7 +81,7 @@ program
   .command('list <dir>')
   .description('获取文件列表')
   .action(async (dir) => {
-    let data = await getAuthToken()
+    let data = await utils.getAuthToken()
     if (!_.get(data, 'bdstoken')) {
       console.log(`用户信息不存在`)
       return
@@ -109,7 +100,7 @@ program
   .command('list_server')
   .description('获取最近的文件上传服务器地址列表')
   .action(async () => {
-    let data = await getAuthToken()
+    let data = await utils.getAuthToken()
     if (!_.get(data, 'bdstoken')) {
       console.log(`用户信息不存在`)
       return
