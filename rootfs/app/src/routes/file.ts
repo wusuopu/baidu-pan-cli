@@ -3,6 +3,7 @@ import { UploadRequest } from '../global.d'
 import _ from 'lodash'
 import multer from 'multer'
 import uuid from 'uuid'
+import fs from 'fs-extra'
 import safeRouter from '../lib/safe-router';
 import BaiduPan from '../lib/baidu-pan'
 import Constants from '../constants'
@@ -14,7 +15,6 @@ const router = safeRouter()
 export default router
 
 router.post('/', uploadParser.single('file'), async (req: UploadRequest, res: Response) => {
-  console.log(req.body, req.file, req.files)
   if (!req.file) {
     return res.status(400).json({error: '缺少file参数'})
   }
@@ -34,9 +34,10 @@ router.post('/', uploadParser.single('file'), async (req: UploadRequest, res: Re
   let taskId = uuid.v4()
   await Store.set(`task:${taskId}`, task, 3600 * 24 * 2)   // 有效期为2天
 
-  pan.uploadFile(req.file.path, targetPath, req.file.filename).then(() => {
+  pan.uploadFile(req.file.path, targetPath, task.filename).then(() => {
     task.status = 'done'
     Store.set(`task:${taskId}`, task, 3600 * 24 * 2)   // 有效期为2天
+    fs.unlink(task.path)      // 上传成功之后删除临时文件
   })
 
   res.json({success: true, task: { id: taskId, ...task }})
