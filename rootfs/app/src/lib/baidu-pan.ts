@@ -216,12 +216,14 @@ export default class BaiduPan {
   }
   /**
    * 上传文件
-   * @param {string} filename
+   * @param {string} filepath
    * @param {string} targetPath
+   * @param {string} filename
    *
    */
-  async uploadFile (filename: string, targetPath: string): Promise<FileItem> {
-    let stat = await fs.stat(filename)
+  async uploadFile (filepath: string, targetPath: string, filename?: string): Promise<FileItem> {
+    if (!filename) { filename = path.basename(filepath) }
+    let stat = await fs.stat(filepath)
     let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
     // 预创建文件
 
@@ -235,7 +237,7 @@ export default class BaiduPan {
         startLogTime: Date.now()
       }),
       form: {
-        path: path.join(targetPath, path.basename(filename)),
+        path: path.join(targetPath, filename),
         autoinit: 1,
         target_path: targetPath,
         block_list: '["5910a591dd8fc18c32a8f3df4fdc1761"]',
@@ -247,7 +249,7 @@ export default class BaiduPan {
     let uploadid = precreateRes.uploadid
     if (!uploadid) {
       logger.error(`precreate fail ${res}`)
-      throw new UploadError(filename, 'precreate')
+      throw new UploadError(filepath, 'precreate')
     }
     logger.debug(`precreate file ${filename}; ${uploadid}`)
 
@@ -265,13 +267,13 @@ export default class BaiduPan {
         partseq: 0
       }),
       formData: {
-        file: fs.createReadStream(filename)
+        file: fs.createReadStream(filepath)
       }
     })
     let uploadRes = JSON.parse(res)
     if (!uploadRes.md5) {
       logger.error(`upload fail ${res}`)
-      throw new UploadError(filename, 'upload')
+      throw new UploadError(filepath, 'upload')
     }
     logger.debug(`upload file ${filename}; ${res}`)
 
@@ -298,7 +300,7 @@ export default class BaiduPan {
     let createRes: FileItem = JSON.parse(res)
     if (!createRes.fs_id) {
       logger.error(`create fail ${res}`)
-      throw new UploadError(filename, 'create')
+      throw new UploadError(filepath, 'create')
     }
     return createRes
   }

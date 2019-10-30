@@ -18,6 +18,7 @@
     "level-ttl": "^3.1.1",
     "leveldown": "^5.4.1",
     "levelup": "^4.3.2",
+    "multer": "^1.4.2",
     "redis": "^2.8.0",
     "request": "^2.88.0",
     "request-promise": "^4.2.4",

@@ -15,7 +15,7 @@ interface Store {
   key_prefix?: string;
   client: any;
   get(key: string): Promise<any>;
-  set(key: string, value: any): Promise<boolean>;
+  set(key: string, value: any, ttl?: number): Promise<boolean>;
   del(key: string): Promise<boolean>;
 }
 
