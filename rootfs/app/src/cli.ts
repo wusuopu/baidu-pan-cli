@@ -2,6 +2,7 @@ import program from 'commander'
 import fs from 'fs-extra'
 import _ from 'lodash'
 import BaiduPan, { AuthToken } from './lib/baidu-pan'
+import input from './lib/input'
 import Store from './store'
 import * as utils from './utils'
 
@@ -97,7 +98,7 @@ program
   })
 
 program
-  .command('offline <dir> <url> [<code> <vcode>]')
+  .command('offline <dir> <url> [<code>] [<vcode>]')
   .description('获取文件列表')
   .action(async (dir, url, code, vcode) => {
     let data = await utils.getAuthToken()
@@ -106,12 +107,27 @@ program
       return
     }
     let pan = new BaiduPan(data.bduss, data.stoken, data.bdstoken)
-    try {
-      let taskid = await pan.offlineDownload(url, dir, code, vcode)
-      console.log('离线下载任务：', taskid)
-    } catch (e) {
-      console.error('创建离线下载任务失败:')
-      console.log(JSON.parse(e.response.body))
+    while (true) {
+      try {
+        let taskid = await pan.offlineDownload(url, dir, code, vcode)
+        console.log('离线下载任务：', taskid)
+      } catch (e) {
+        let res = JSON.parse(e.response.body)
+        if (e.response.statusCode === 403 && res.vcode && res.img) {
+          console.log('验证码图片：', res.img)
+          vcode = res.vcode
+          code = (await input('输入验证码：')).trim()
+          if (!code) {
+            console.error('验证码为空')
+            return
+          }
+          continue
+        }
+        console.error('创建离线下载任务失败:')
+        console.log(e)
+        console.log(res)
+      }
+      break
     }
   })
 
