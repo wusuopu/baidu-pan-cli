@@ -13,6 +13,7 @@ if (NODE_ENV === 'development') {
 }
 
 module.exports = {
+  devtool: 'hidden-source-map',
   entry: {
     index: path.resolve(rootPath, './src/index.ts'),
     cli: path.resolve(rootPath, './src/cli.ts')

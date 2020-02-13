@@ -1,5 +1,5 @@
 import _ from 'lodash'
-import request from 'request-promise'
+import request, { Options } from 'request-promise'
 import path from 'path'
 import fs from 'fs-extra'
 import logger from './logger'
@@ -37,7 +37,7 @@ export interface AuthToken {
   pcs_server?: string,
 }
 
-const fetch = async (options: any) => {
+const fetch = async (options: Options) => {
   if (!options.headers) { options.headers = {} }
   options.headers['User-Agent'] = USER_AGENT
   return await request(options)
@@ -348,5 +348,33 @@ export default class BaiduPan {
       })
     })
     return JSON.parse(res)
+  }
+
+  /**
+   * 离线下载
+   */
+  async offlineDownload (url: string, targetPath: string, code?: string, vcode?: string): Promise<{task_id: number}> {
+    let res = await fetch({
+      url: `${PAN_URL}/rest/2.0/services/cloud_dl`,
+      method: 'POST',
+      headers: {
+        Cookie: buildCookie(this.bduss, this.stoken)
+      },
+      qs: buildQuery({bdstoken: this.bdstoken }),
+      form: {
+        method: 'add_task',
+        app_id: 250528,
+        save_path: targetPath,
+        source_url: url,
+        input: code,    // 验证码
+        vcode,
+      },
+    })
+    //  需要验证码:
+    //  status 403
+    //  {"vcode":"3332423865633234636166333465663732323763363637363764323966666433666231353930373930363732303030303030303030303030303031353831353731313430803AAE51ADF07AE5674B87B7706C6713","img":"https:\/\/pan.baidu.com\/genimage?3332423865633234636166333465663732323763363637363764323966666433666231353930373930363732303030303030303030303030303031353831353731313430803AAE51ADF07AE5674B87B7706C6713","error_code":-19,"error_msg":"vcode is needed","request_id":1010162743822390530}
+
+    res = JSON.parse(res)
+    return res.task_id
   }
 }

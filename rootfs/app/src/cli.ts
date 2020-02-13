@@ -97,6 +97,25 @@ program
   })
 
 program
+  .command('offline <dir> <url> [<code> <vcode>]')
+  .description('获取文件列表')
+  .action(async (dir, url, code, vcode) => {
+    let data = await utils.getAuthToken()
+    if (!_.get(data, 'bdstoken')) {
+      console.log(`用户信息不存在`)
+      return
+    }
+    let pan = new BaiduPan(data.bduss, data.stoken, data.bdstoken)
+    try {
+      let taskid = await pan.offlineDownload(url, dir, code, vcode)
+      console.log('离线下载任务：', taskid)
+    } catch (e) {
+      console.error('创建离线下载任务失败:')
+      console.log(JSON.parse(e.response.body))
+    }
+  })
+
+program
   .command('list_server')
   .description('获取最近的文件上传服务器地址列表')
   .action(async () => {
