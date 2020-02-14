@@ -64,3 +64,22 @@ router.delete('/', async (req: Request, res: Response) => {
   await pan.deleteFiles(filelist)
   res.json({success: true})
 })
+
+router.post('/offline', async (req: Request, res: Response) => {
+  let { targetPath, url, code, vcode } = req.query
+  if (!targetPath) {
+    return res.status(400).json({error: '缺少targetPath参数'})
+  }
+  if (!url) {
+    return res.status(400).json({error: '缺少url参数'})
+  }
+  let pan = new BaiduPan(res.locals.auth.bduss, res.locals.auth.stoken, res.locals.auth.bdstoken)
+  try {
+    let taskId = await pan.offlineDownload(url, targetPath, code, vcode)
+    res.json({success: true, taskId})
+  } catch (error) {
+    res.header('content-type', 'application/json')
+       .status(error.response.statusCode)
+       .send(error.response.body)
+  }
+})

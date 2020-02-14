@@ -37,6 +37,12 @@ node build/prod/cli.js upload <filename> <target_path>
 将本地的 filename 文件上传到网盘的 target_path 目录下。
 ```
 
+5.离线下载
+```
+node build/prod/cli.js offline <target_path> <url>
+将 url 文件下载到 target_path 目录下。
+```
+
 ### api调用的方式
 先运行服务 `PORT=8080 yarn start`， 若 PORT 变量不指定，则默认使用 80 端口。
 或者直接在项目根目录下执行 `docker-compose -f docker-compose.yml up -d`
@@ -62,6 +68,12 @@ DELETE /api/files?filelist[]=<file1>&filelist[]=<file2>
 POST /api/files
 {file, targetPath}
 使用 multipart/form-data 的形式提交数据。
+```
+
+5. 离线下载
+```
+POST /api/files/offline
+{targetPath, url, [code], [vcdoe]}
 ```
 
 api可以部署成微服务的形式，方便其他有需求的程序来调用。
