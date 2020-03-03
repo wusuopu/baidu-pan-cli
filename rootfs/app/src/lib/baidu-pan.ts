@@ -60,12 +60,6 @@ const streamMD5 = (s: Readable):Promise<string> => {
     s.on('end', () => resolve(m.digest('hex')))
   })
 }
-const buffer2Stream = (buf: string|Buffer): Readable => {
-  let steam = new Duplex()
-  steam.push(buf)
-  steam.push(null)
-  return steam
-}
 
 /**
  * 构建 headers Cookie 的值
@@ -91,8 +85,8 @@ const buildQuery = (qs?: any): any => {
 /**
  * 获取当前时间戳
  */
-const getTimestamp = (): string => {
-  return (Date.now() / 1000).toFixed(0)
+const getTimestamp = (time?: number): string => {
+  return ((time || Date.now()) / 1000).toFixed(0)
 }
 
 export class UploadError extends Error {
@@ -116,6 +110,79 @@ export class DeleteError extends Error {
   }
 }
 
+// 上传状态管理
+type UploadStatusType = {
+  uploadid?: string;      // 上传的id号
+  blockList: string[];    // 各个分片的文件 md5
+  contentMd5: string;     // 上传文件的md5
+  sliceMd5?: string;      // 秒传文件的校验md5
+  uploadPath?: string;    // 文件上传的目标路径
+  localTime: string;      // 文件的本地时间
+  totalSize: number;      // 文件的总大小
+  timestamp: number;      // 该状态的创建时间
+}
+class UploadStatusManager {
+  filename: string;
+  status: {[key: string]: UploadStatusType};
+
+  constructor(filename?: string) {
+    this.filename = filename || path.join(os.tmpdir(), 'baidu-cli-upload.json')
+    try {
+      this.status = JSON.parse(fs.readFileSync(this.filename, {encoding: 'utf-8'}))
+    } catch (error) {
+      this.status = {}
+    }
+  }
+
+  get(contentMd5: string):UploadStatusType|undefined {
+    return this.status[contentMd5]
+  }
+
+  async set(key: string, value: UploadStatusType) {
+    value.timestamp = Date.now()
+    this.status[key] = value
+    this._update()
+  }
+
+  async getByFilePath(filepath: string):Promise<UploadStatusType> {
+    let readStream = fs.createReadStream(filepath)
+    let contentMd5 = await streamMD5(readStream)
+    readStream.close()
+
+    let status = this.status[contentMd5]
+    let stat = await fs.stat(filepath)
+    if (!status || (Date.now() - status.timestamp) > 86400000) {
+      // 状态的过期时间为1天
+      status = {
+        blockList: [],
+        contentMd5,
+        localTime: getTimestamp(stat.ctimeMs),
+        totalSize: stat.size,
+        timestamp: Date.now(),
+      }
+    }
+
+    if (!status.sliceMd5 && stat.size >= SLICE_MD5_SIZE) {
+      let buf = Buffer.alloc(SLICE_MD5_SIZE)
+      let fd = await fs.open(filepath, 'r')
+      await fs.read(fd, buf, 0, SLICE_MD5_SIZE, 0)
+      await fs.close(fd)
+      status.sliceMd5 = strMD5(buf)
+    }
+
+    return status
+  }
+
+  async del(contentMd5: string) {
+    delete this.status[contentMd5]
+    await this._update()
+  }
+
+  private async _update() {
+    await fs.writeFile(this.filename, JSON.stringify(this.status))
+  }
+}
+
 export default class BaiduPan {
   bduss: string
   stoken: string
@@ -123,6 +190,8 @@ export default class BaiduPan {
   pcsett: string
 
   pcsApiUrl: string
+
+  statusManager: UploadStatusManager
   /**
    * @param {string} bduss: 从 .baidu.com 的 cookie 中获取 BDUSS;
    * @param {string} stoken: 从 .pan.baidu.com 的 cookie 中获取 STOKEN;
@@ -252,15 +321,14 @@ export default class BaiduPan {
       logger.error('文件为空！')
       return
     }
-    let localTime = (stat.ctimeMs / 1000).toFixed(0)
 
-    if (stat.size > 1048576000) {      // 大于1M的文件尝试秒传
-      let rapiduploadInfo = await this._getRapiduploadInfo(
-        filepath,
-        targetPath,
-        localTime,
-        filename,
-      )
+    // 上传状态管理，用于断点续传
+    this.statusManager = new UploadStatusManager()
+    let uploadStatus = await this.statusManager.getByFilePath(filepath)
+    uploadStatus.uploadPath = path.join(targetPath, filename)
+
+    if (stat.size > 1048576) {      // 大于1M的文件尝试秒传
+      let rapiduploadInfo = await this._getRapiduploadInfo(uploadStatus, targetPath)
       if (rapiduploadInfo.errno === 0) {
         logger.info('文件秒传完成')
         // 文件已经存在，不再重复上传
@@ -268,26 +336,29 @@ export default class BaiduPan {
       }
     }
 
-    // 预创建文件
     let isSlice = stat.size > PER_UPLOAD_SLICE_SIZE
-    let precreateRes = await this._preCreateFile(targetPath, filename, localTime, isSlice)
-    let uploadid = precreateRes.uploadid
-    if (!uploadid) {
-      logger.error(`precreate fail ${JSON.stringify(precreateRes)}`)
-      throw new UploadError(filepath, 'precreate')
+    if (!uploadStatus.uploadid) {
+      // 预创建文件
+      let precreateRes = await this._preCreateFile(targetPath, filename, uploadStatus.localTime, isSlice)
+      let uploadid = precreateRes.uploadid
+      if (!uploadid) {
+        logger.error(`precreate fail ${JSON.stringify(precreateRes)}`)
+        throw new UploadError(filepath, 'precreate')
+      }
+      logger.debug(`precreate file ${filename}; ${uploadid} ${JSON.stringify(precreateRes.block_list)}`)
+      uploadStatus.uploadid = uploadid
     }
-    logger.debug(`precreate file ${filename}; ${uploadid} ${JSON.stringify(precreateRes.block_list)}`)
 
     // 上传文件
-    let uploadPath = path.join(targetPath, filename)
     let allSlices = []
     if (isSlice) {
-      allSlices = await this._uploadFileSlice(filepath, uploadPath, uploadid)
+      allSlices = await this._uploadFileSlice(uploadStatus, filepath)
     } else {
       // 整块上传
       let res = await this._uploadFile(
         fs.createReadStream(filepath),
-        precreateRes.path, uploadid, 0, stat.size
+        uploadStatus.uploadPath,
+        uploadStatus.uploadid, 0, stat.size
       )
       if (!res.md5) {
         logger.error(`upload fail ${JSON.stringify(res)}`)
@@ -300,17 +371,18 @@ export default class BaiduPan {
 
     // 创建文件
     let createRes = await this._createFile(
-      uploadPath,
+      uploadStatus.uploadPath,
       stat.size,
-      precreateRes.uploadid,
+      uploadStatus.uploadid,
       targetPath,
       allSlices,
-      localTime
+      uploadStatus.localTime
     )
     if (!createRes.fs_id) {
       logger.error(`create fail ${JSON.stringify(createRes)}`)
       throw new UploadError(filepath, 'create')
     }
+    await this.statusManager.del(uploadStatus.contentMd5)
     return createRes
   }
   /**
@@ -388,18 +460,7 @@ export default class BaiduPan {
   }
 
   // 文件上传相关
-  private async _getRapiduploadInfo (filepath: string, targetPath: string, localTime: string, filename: string): Promise<any> {
-    let readStream = fs.createReadStream(filepath)
-    let contentMd5 = await streamMD5(readStream)
-    readStream.close()
-
-    let buf = Buffer.alloc(SLICE_MD5_SIZE)
-    let fd = await fs.open(filepath, 'r')
-    await fs.read(fd, buf, 0, SLICE_MD5_SIZE, 0)
-    await fs.close(fd)
-    let sliceMd5 = strMD5(buf)
-    let stat = await fs.stat(filepath)
-
+  private async _getRapiduploadInfo (uploadStatus: UploadStatusType, targetPath: string): Promise<any> {
     let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
     let apiUri = `${PAN_API_URL}/rapidupload`
     let res = await fetch({
@@ -412,12 +473,12 @@ export default class BaiduPan {
         startLogTime: Date.now()
       }),
       form: {
-        path: path.join(targetPath, filename),
-        'content-length': stat.size,
-        'content-md5': contentMd5,
-        'slice-md5': sliceMd5,
+        path: uploadStatus.uploadPath,
+        'content-length': uploadStatus.totalSize,
+        'content-md5': uploadStatus.contentMd5,
+        'slice-md5': uploadStatus.sliceMd5,
         target_path: targetPath,
-        local_mtime: localTime,
+        local_mtime: uploadStatus.localTime,
       }
     })
     // {"errno":0,"info":{"size":43235330,"category":6,"fs_id":2095781100430,"request_id":1.4344745714769e+18,"path":"\/temp\/XnViewMP-mac.dmg","isdir":0,"mtime":1583151834,"ctime":1583151834,"md5":"fb5d65ac1t097b9d4d8904d5aad888e1"},"request_id":1434474571476910645}
@@ -478,6 +539,7 @@ export default class BaiduPan {
       }
     })
 
+    // {"md5":"da35ae7acd19258f3fd18cbe5fa35dd9","partseq":"1","request_id":1446694445720637772,"uploadid":"P1-MTAuMTQzLjE0MC40MzoxNTgzMTk3MzU0OjE0NDY2OTM3NTI3NDAwMTMwMTE="}
     return JSON.parse(res)
   }
   // 创建文件
@@ -505,35 +567,57 @@ export default class BaiduPan {
     return JSON.parse(res)
   }
   // 分片上传文件
-  private async _uploadFileSlice (filepath: string, uploadPath: string, uploadid: string): Promise<Array<string>> {
-    let filename = path.basename(filepath)
+  private async _uploadFileSlice (uploadStatus: UploadStatusType, filepath: string): Promise<Array<string>> {
+    let filename = path.basename(uploadStatus.uploadPath)
     let fd = await fs.open(filepath, 'r')
     let sliceNum = 0
     let buf = Buffer.alloc(PER_UPLOAD_SLICE_SIZE)
-    let readResult = await fs.read(fd, buf, 0, PER_UPLOAD_SLICE_SIZE, null)
     let allSlices = []
-    while (readResult.bytesRead) {
+    while (true) {
+      if (uploadStatus.blockList[sliceNum]) {
+        logger.info(`第 ${sliceNum} 片文件已经上传过了 ${uploadStatus.blockList[sliceNum]}`)
+        allSlices.push(uploadStatus.blockList[sliceNum])
+        sliceNum++
+        continue
+      }
+
+      let position = PER_UPLOAD_SLICE_SIZE * sliceNum
+      let readResult = await fs.read(fd, buf, 0, PER_UPLOAD_SLICE_SIZE, position)
+      if (!readResult.bytesRead) {
+        // 已经到文件尾
+        break
+      }
       logger.info(`准备上传第 ${sliceNum} 片文件`)
       let tmpFile = path.join(os.tmpdir(), `${filename}-${uuid.v1()}`)
       let writeFd = await fs.open(tmpFile, 'w')
       await fs.write(writeFd, buf, 0, readResult.bytesRead, null)
       await fs.close(writeFd)
 
-      let res = await this._uploadFile(
-        fs.createReadStream(tmpFile),
-        uploadPath,   // 分片上传时，没有 precreateRes.path
-        uploadid,
-        sliceNum,
-        readResult.bytesRead
-      )
+      let res
+      try {
+        res = await this._uploadFile(
+          fs.createReadStream(tmpFile),
+          uploadStatus.uploadPath,   // 分片上传时，没有 precreateRes.path
+          uploadStatus.uploadid,
+          sliceNum,
+          readResult.bytesRead
+        )
+      } catch (error) {
+        throw error
+      } finally {
+        fs.unlink(tmpFile)
+      }
       if (!res.md5) {
         logger.error(`upload fail ${JSON.stringify(res)}`)
         throw new UploadError(filepath, 'upload')
       }
-      sliceNum++
-        readResult = await fs.read(fd, buf, 0, PER_UPLOAD_SLICE_SIZE, null)
       allSlices.push(res.md5)
       logger.info(`第 ${res.partseq} 片上传完成: ${res.md5} ${tmpFile}`)
+
+      uploadStatus.blockList.push(res.md5)
+      // 保存上传的进度状态
+      await this.statusManager.set(uploadStatus.contentMd5, uploadStatus)
+      sliceNum++
     }
 
     return allSlices
