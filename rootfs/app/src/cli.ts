@@ -52,6 +52,7 @@ program
     }
     let pan = new BaiduPan(data.bduss, data.stoken, data.bdstoken)
     try {
+      console.log('开始上传：', filename)
       let res = await pan.uploadFile(filename, targetPath)
       console.log('上传成功：', res.path)
     } catch (e) {

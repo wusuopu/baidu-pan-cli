@@ -2,12 +2,19 @@ import _ from 'lodash'
 import request, { Options } from 'request-promise'
 import path from 'path'
 import fs from 'fs-extra'
+import MD5 from 'md5.js'
+import { Readable, Duplex } from 'stream'
+import uuid from 'uuid'
+import os from 'os'
 import logger from './logger'
 
 const PAN_URL = 'http://pan.baidu.com'
 const PAN_API_URL = `https://pan.baidu.com/api`
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.120 Safari/537.36'
 
+const SLICE_MD5_SIZE = 256 * 1024         // 计算 slice md5 的字节数
+const PER_UPLOAD_SLICE_SIZE = 4194304     // 分片上传，每片上传 4M
+const EMPTY_CONTENT_MD5 = 'd41d8cd98f00b204e9800998ecf8427e'    // 空字符串 md5
 
 export interface FileItem {
   server_filename: string,
@@ -41,6 +48,23 @@ const fetch = async (options: Options) => {
   if (!options.headers) { options.headers = {} }
   options.headers['User-Agent'] = USER_AGENT
   return await request(options)
+}
+// 计算md5
+const strMD5 = (data: string|Buffer):string => {
+  return (new MD5()).update(data as Buffer).digest('hex')
+}
+const streamMD5 = (s: Readable):Promise<string> => {
+  return new Promise((resolve) => {
+    let m = new MD5()
+    s.on('data', chunk => m.update(chunk))
+    s.on('end', () => resolve(m.digest('hex')))
+  })
+}
+const buffer2Stream = (buf: string|Buffer): Readable => {
+  let steam = new Duplex()
+  steam.push(buf)
+  steam.push(null)
+  return steam
 }
 
 /**
@@ -224,82 +248,67 @@ export default class BaiduPan {
   async uploadFile (filepath: string, targetPath: string, filename?: string): Promise<FileItem> {
     if (!filename) { filename = path.basename(filepath) }
     let stat = await fs.stat(filepath)
-    let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
-    // 预创建文件
+    if (stat.size === 0) {
+      logger.error('文件为空！')
+      return
+    }
+    let localTime = (stat.ctimeMs / 1000).toFixed(0)
 
-    let apiUri = `${PAN_API_URL}/precreate`
-    let res = await fetch({
-      url: apiUri,
-      method: 'POST',
-      headers,
-      qs: buildQuery({
-        bdstoken: this.bdstoken,
-        startLogTime: Date.now()
-      }),
-      form: {
-        path: path.join(targetPath, filename),
-        autoinit: 1,
-        target_path: targetPath,
-        block_list: '["5910a591dd8fc18c32a8f3df4fdc1761"]',
-        local_mtime: (stat.ctimeMs / 1000).toFixed(0)
+    if (stat.size > 1048576000) {      // 大于1M的文件尝试秒传
+      let rapiduploadInfo = await this._getRapiduploadInfo(
+        filepath,
+        targetPath,
+        localTime,
+        filename,
+      )
+      if (rapiduploadInfo.errno === 0) {
+        logger.info('文件秒传完成')
+        // 文件已经存在，不再重复上传
+        return rapiduploadInfo.info
       }
-    })
+    }
 
-    let precreateRes = JSON.parse(res)
+    // 预创建文件
+    let isSlice = stat.size > PER_UPLOAD_SLICE_SIZE
+    let precreateRes = await this._preCreateFile(targetPath, filename, localTime, isSlice)
     let uploadid = precreateRes.uploadid
     if (!uploadid) {
-      logger.error(`precreate fail ${res}`)
+      logger.error(`precreate fail ${JSON.stringify(precreateRes)}`)
       throw new UploadError(filepath, 'precreate')
     }
-    logger.debug(`precreate file ${filename}; ${uploadid}`)
+    logger.debug(`precreate file ${filename}; ${uploadid} ${JSON.stringify(precreateRes.block_list)}`)
 
     // 上传文件
-    apiUri = this.pcsApiUrl
-    res = await fetch({
-      url: apiUri,
-      method: 'POST',
-      qs: buildQuery({
-        method: 'upload',
-        BDUSS: this.bduss,
-        path: precreateRes.path,
-        uploadid,
-        uploadsign: 0,
-        partseq: 0
-      }),
-      formData: {
-        file: fs.createReadStream(filepath)
+    let uploadPath = path.join(targetPath, filename)
+    let allSlices = []
+    if (isSlice) {
+      allSlices = await this._uploadFileSlice(filepath, uploadPath, uploadid)
+    } else {
+      // 整块上传
+      let res = await this._uploadFile(
+        fs.createReadStream(filepath),
+        precreateRes.path, uploadid, 0, stat.size
+      )
+      if (!res.md5) {
+        logger.error(`upload fail ${JSON.stringify(res)}`)
+        throw new UploadError(filepath, 'upload')
       }
-    })
-    let uploadRes = JSON.parse(res)
-    if (!uploadRes.md5) {
-      logger.error(`upload fail ${res}`)
-      throw new UploadError(filepath, 'upload')
+      allSlices.push(res.md5)
     }
-    logger.debug(`upload file ${filename}; ${res}`)
+
+    logger.debug(`upload file ${filename};`)
 
     // 创建文件
-    apiUri = `${PAN_API_URL}/create`
-    res = await fetch({
-      url: apiUri,
-      method: 'POST',
-      headers,
-      qs: buildQuery({
-        isdir: 0,
-        rtype: 1,
-        bdstoken: this.bdstoken
-      }),
-      form: {
-        path: precreateRes.path,
-        size: stat.size,
-        uploadid: precreateRes.uploadid,
-        target_path: targetPath,
-        block_list: `["${uploadRes.md5}"]`,
-        local_mtime: (stat.ctimeMs / 1000).toFixed(0)
-      }
-    })
-    let createRes: FileItem = JSON.parse(res)
+    let createRes = await this._createFile(
+      uploadPath,
+      stat.size,
+      precreateRes.uploadid,
+      targetPath,
+      allSlices,
+      localTime
+    )
     if (!createRes.fs_id) {
-      logger.error(`create fail ${res}`)
+      logger.error(`create fail ${JSON.stringify(createRes)}`)
       throw new UploadError(filepath, 'create')
     }
     return createRes
@@ -376,5 +385,157 @@ export default class BaiduPan {
 
     res = JSON.parse(res)
     return res.task_id
+  }
+
+  // 文件上传相关
+  private async _getRapiduploadInfo (filepath: string, targetPath: string, localTime: string, filename: string): Promise<any> {
+    let readStream = fs.createReadStream(filepath)
+    let contentMd5 = await streamMD5(readStream)
+    readStream.close()
+
+    let buf = Buffer.alloc(SLICE_MD5_SIZE)
+    let fd = await fs.open(filepath, 'r')
+    await fs.read(fd, buf, 0, SLICE_MD5_SIZE, 0)
+    await fs.close(fd)
+    let sliceMd5 = strMD5(buf)
+    let stat = await fs.stat(filepath)
+
+    let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
+    let apiUri = `${PAN_API_URL}/rapidupload`
+    let res = await fetch({
+      url: apiUri,
+      method: 'POST',
+      headers,
+      qs: buildQuery({
+        rtype: 1,
+        bdstoken: this.bdstoken,
+        startLogTime: Date.now()
+      }),
+      form: {
+        path: path.join(targetPath, filename),
+        'content-length': stat.size,
+        'content-md5': contentMd5,
+        'slice-md5': sliceMd5,
+        target_path: targetPath,
+        local_mtime: localTime,
+      }
+    })
+    // {"errno":0,"info":{"size":43235330,"category":6,"fs_id":2095781100430,"request_id":1.4344745714769e+18,"path":"\/temp\/XnViewMP-mac.dmg","isdir":0,"mtime":1583151834,"ctime":1583151834,"md5":"fb5d65ac1t097b9d4d8904d5aad888e1"},"request_id":1434474571476910645}
+    return JSON.parse(res)
+  }
+  // 预创建文件
+  private async _preCreateFile (targetPath: string, filename: string, localTime: string, isSlice: boolean = false) {
+    let apiUri = `${PAN_API_URL}/precreate`
+    let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
+
+    //'5910a591dd8fc18c32a8f3df4fdc1761'
+    //'a5fc157d78e6ad1c7e114b056c92821e'
+    let blockList = ['5910a591dd8fc18c32a8f3df4fdc1761']
+    if (isSlice) { blockList.push('a5fc157d78e6ad1c7e114b056c92821e') }   // 分片上传
+    let res = await fetch({
+      url: apiUri,
+      method: 'POST',
+      headers,
+      qs: buildQuery({
+        bdstoken: this.bdstoken,
+        startLogTime: Date.now()
+      }),
+      form: {
+        path: path.join(targetPath, filename),
+        autoinit: 1,
+        target_path: targetPath,
+        block_list: JSON.stringify(blockList),
+        local_mtime: localTime,
+      }
+    })
+    return JSON.parse(res)
+  }
+  // 上传文件
+  private async _uploadFile (data: Readable, path: string, uploadid: string, partseq: number, totalSize: number) {
+    let uploadedSize = 0
+    let uploadedProgress = '0'
+
+    let res = await fetch({
+      url: this.pcsApiUrl,
+      method: 'POST',
+      qs: buildQuery({
+        method: 'upload',
+        BDUSS: this.bduss,
+        path,
+        uploadid,
+        uploadsign: 0,
+        partseq,
+      }),
+      formData: {
+        file: data.on('data', (chunk) => {
+          uploadedSize += chunk.length
+          let progress = ((uploadedSize / totalSize) * 100).toFixed(0)
+          if (progress !== uploadedProgress) {
+            uploadedProgress = progress
+            logger.debug(`uploaded: ${uploadedProgress}% `)
+          }
+        })
+      }
+    })
+
+    return JSON.parse(res)
+  }
+  // 创建文件
+  private async _createFile (path: string, size: number, uploadid: string, targetPath: string, blockList: string[], localTime: string): Promise<FileItem> {
+    let apiUri = `${PAN_API_URL}/create`
+    let headers = { Cookie: buildCookie(this.bduss, this.stoken) }
+    let res = await fetch({
+      url: apiUri,
+      method: 'POST',
+      headers,
+      qs: buildQuery({
+        isdir: 0,
+        rtype: 1,
+        bdstoken: this.bdstoken
+      }),
+      form: {
+        path,
+        size,
+        uploadid,
+        target_path: targetPath,
+        block_list: JSON.stringify(blockList),
+        local_mtime: localTime,
+      }
+    })
+    return JSON.parse(res)
+  }
+  // 分片上传文件
+  private async _uploadFileSlice (filepath: string, uploadPath: string, uploadid: string): Promise<Array<string>> {
+    let filename = path.basename(filepath)
+    let fd = await fs.open(filepath, 'r')
+    let sliceNum = 0
+    let buf = Buffer.alloc(PER_UPLOAD_SLICE_SIZE)
+    let readResult = await fs.read(fd, buf, 0, PER_UPLOAD_SLICE_SIZE, null)
+    let allSlices = []
+    while (readResult.bytesRead) {
+      logger.info(`准备上传第 ${sliceNum} 片文件`)
+      let tmpFile = path.join(os.tmpdir(), `${filename}-${uuid.v1()}`)
+      let writeFd = await fs.open(tmpFile, 'w')
+      await fs.write(writeFd, buf, 0, readResult.bytesRead, null)
+      await fs.close(writeFd)
+
+      let res = await this._uploadFile(
+        fs.createReadStream(tmpFile),
+        uploadPath,   // 分片上传时，没有 precreateRes.path
+        uploadid,
+        sliceNum,
+        readResult.bytesRead
+      )
+      if (!res.md5) {
+        logger.error(`upload fail ${JSON.stringify(res)}`)
+        throw new UploadError(filepath, 'upload')
+      }
+      sliceNum++
+        readResult = await fs.read(fd, buf, 0, PER_UPLOAD_SLICE_SIZE, null)
+      allSlices.push(res.md5)
+      logger.info(`第 ${res.partseq} 片上传完成: ${res.md5} ${tmpFile}`)
+    }
+
+    return allSlices
   }
 }
