@@ -3,7 +3,6 @@ import fs from 'fs-extra'
 import _ from 'lodash'
 import BaiduPan, { AuthToken } from './lib/baidu-pan'
 import input from './lib/input'
-import gofile from './lib/gofile'
 import Store from './store'
 import * as utils from './utils'
 
@@ -151,24 +150,6 @@ program
       await Store.set('auth:token', data)
     } catch (e) {
       console.error('获取服务器地址列表失败:', e)
-    }
-  })
-
-program
-  .command('gupload <filename>')
-  .description('将文件上传至GoFile')
-  .action(async (filename) => {
-    if (!fs.existsSync(filename)) {
-      console.log(`文件 ${filename} 不存在`)
-      return
-    }
-
-    try {
-      let res = await gofile.upload(filename)
-      let ret = await gofile.getUpload(res.code)
-      console.log('上传成功:', ret.files[0])
-    } catch (error) {
-      console.error('上传失败:', error)
     }
   })
 
